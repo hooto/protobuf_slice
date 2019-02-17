@@ -77,11 +77,13 @@ type field_entry struct {
 	field      string
 	repeated   string
 	equal_skip bool
+	isObject   bool
 }
 
 type msg_entry struct {
 	name   string
 	key    types.KvPairs
+	keyFmt string
 	fields []field_entry
 }
 
@@ -162,6 +164,16 @@ func do_proto(file string) error {
 
 			if strings.Contains(str, "struct:object_slice_key") {
 				entry.key.Set(field, ps[0])
+				if entry.keyFmt != "" {
+					entry.keyFmt += "."
+				}
+				if ps[0] == "string" {
+					entry.keyFmt += `%s`
+				} else if ps[0] == "bool" {
+					entry.keyFmt += `%b`
+				} else {
+					entry.keyFmt += `%d`
+				}
 			}
 
 		case "repeated":
@@ -177,10 +189,15 @@ func do_proto(file string) error {
 			})
 
 		default:
-			if enums.Has(ps[0]) {
+			if !strings.HasPrefix(ps[0], "/") {
 				field := strings.Replace(strings.Title(strings.Replace(ps[1], "_", " ", -1)), " ", "", -1)
+				isObject := false
+				if !enums.Has(ps[0]) {
+					isObject = true
+				}
 				entry.fields = append(entry.fields, field_entry{
-					field: field,
+					field:    field,
+					isObject: isObject,
 				})
 			}
 		}
@@ -203,6 +220,10 @@ func do_proto(file string) error {
 	code += fmt.Sprintf("// source: %s\n// DO NOT EDIT!\n", filename)
 	code += "\npackage " + pkgname + "\n\n"
 	code += "import \"sync\"\n"
+	/**
+	code += "import \"fmt\"\n"
+	code += "import \"github.com/lessos/lessgo/types\"\n"
+	*/
 
 	for _, v := range list {
 		if v.name == "" || len(v.key) == 0 {
@@ -214,17 +235,66 @@ func do_proto(file string) error {
 		}
 
 		// locker
-		code += fmt.Sprintf("\nvar object_slice_mu_%s sync.RWMutex\n\n", v.name)
+		code += fmt.Sprintf("\nvar object_slice_mu_%s sync.RWMutex\n", v.name)
+
+		/**
+		// IterKey
+		code += fmt.Sprintf("\nfunc (it *%s) IterKey() string {\n", v.name)
+		p_keys_pri := []string{}
+		for _, pkv := range v.key {
+			p_keys_pri = append(p_keys_pri, fmt.Sprintf("it.%s", pkv.Key))
+		}
+		code += fmt.Sprintf("\treturn fmt.Sprintf(\"%s\", %s)\n}\n", v.keyFmt, strings.Join(p_keys_pri, ", "))
+
+		// IterEqual
+		code += fmt.Sprintf("\nfunc (it *%s) IterEqual(it2 types.IterObject) bool {\n", v.name)
+		code += fmt.Sprintf("\tif it2 == nil {\n\t\treturn false\n\t}\n")
+		code += fmt.Sprintf("\n\tit3, ok := it2.(*%s)\n\tif !ok {\n\t\treturn false\n\t}\n", v.name)
+		code_diff := ""
+		for i, vf := range v.fields {
+
+			if vf.equal_skip {
+				continue
+			}
+
+			if code_diff == "" {
+				code_diff += "\n\tif "
+			} else {
+				code_diff += " ||\n\t\t"
+			}
+
+			if vf.isObject {
+				code_diff += fmt.Sprintf("(it.%s == nil && it3.%s != nil) || ", vf.field, vf.field)
+				code_diff += fmt.Sprintf("(it.%s != nil && !it.%s.IterEqual(it3.%s))", vf.field, vf.field, vf.field)
+			} else if vf.repeated == "" {
+				code_diff += fmt.Sprintf("it.%s != it3.%s", vf.field, vf.field)
+			} else {
+				code_diff += fmt.Sprintf("!types.IterObjectsEqual(it.%s, it3.%s)", vf.field, vf.field)
+			}
+
+			if i+1 >= len(v.fields) {
+				code_diff += " {\n\t\treturn false\n\t}\n"
+			}
+		}
+		code += code_diff
+		code += "\treturn true\n}\n"
+		*/
 
 		// equal
-		code += fmt.Sprintf("func (it *%s) Equal(it2 *%s) bool {\n", v.name, v.name)
+		code += fmt.Sprintf("\nfunc (it *%s) Equal(it2 *%s) bool {\n", v.name, v.name)
 		code += fmt.Sprintf("\tif it2 == nil")
 		for i, vf := range v.fields {
 
-			if vf.repeated == "" {
-				code += fmt.Sprintf(" ||\n\t\tit.%s != it2.%s", vf.field, vf.field)
-			} else {
-				code += fmt.Sprintf(" ||\n\t\t!%sSliceEqual(it.%s, it2.%s)", vf.repeated, vf.field, vf.field)
+			if !vf.equal_skip {
+
+				if vf.isObject {
+					code += fmt.Sprintf(" ||\n\t\t(it.%s == nil && it2.%s != nil)", vf.field, vf.field)
+					code += fmt.Sprintf(" ||\n\t\t(it.%s != nil && !it.%s.Equal(it2.%s))", vf.field, vf.field, vf.field)
+				} else if vf.repeated == "" {
+					code += fmt.Sprintf(" ||\n\t\tit.%s != it2.%s", vf.field, vf.field)
+				} else {
+					code += fmt.Sprintf(" ||\n\t\t!%sSliceEqual(it.%s, it2.%s)", vf.repeated, vf.field, vf.field)
+				}
 			}
 
 			if i+1 >= len(v.fields) {
@@ -236,6 +306,10 @@ func do_proto(file string) error {
 		// sync
 		code += fmt.Sprintf("\nfunc (it *%s) Sync(it2 *%s) bool {\n", v.name, v.name)
 		code += fmt.Sprintf("\tif it2 == nil {\n\t\treturn false\n\t}\n")
+		code += fmt.Sprintf("\tif it.Equal(it2) {\n\t\treturn false\n\t}\n")
+		code += fmt.Sprintf("\t*it = *it2\n")
+		code += fmt.Sprintf("\treturn true\n}\n")
+		/**
 		code += fmt.Sprintf("\tchanged := false\n")
 		for _, vf := range v.fields {
 			if vf.repeated == "" {
@@ -247,6 +321,7 @@ func do_proto(file string) error {
 			}
 		}
 		code += "\treturn changed\n}\n"
+		*/
 
 		// slice get
 		p_keys := []string{}
@@ -275,6 +350,8 @@ func do_proto(file string) error {
 			p_keys_eq = append(p_keys_eq, fmt.Sprintf("v.%s != v2.%s", pkv.Key, pkv.Key))
 		}
 		code += fmt.Sprintf("\t\t\tif %s {\n\t\t\t\tcontinue\n\t\t\t}\n", strings.Join(p_keys_eq, " || "))
+		code += fmt.Sprintf("\t\t\tif !v.Equal(v2) {\n\t\t\t\treturn false\n\t\t\t}\n")
+		/**
 		for _, vf := range v.fields {
 			if ok := v.key.Get(vf.field); ok != nil {
 				continue
@@ -290,6 +367,7 @@ func do_proto(file string) error {
 					vf.repeated, vf.field, vf.field)
 			}
 		}
+		*/
 		code += "\t\t\thit = true\n\t\t\tbreak\n"
 		code += "\t\t}\n"
 		code += "\t\tif !hit {\n\t\t\treturn false\n\t\t}\n"
@@ -302,12 +380,14 @@ func do_proto(file string) error {
 		code += fmt.Sprintf("\tobject_slice_mu_%s.Lock()\n\tdefer object_slice_mu_%s.Unlock()\n\n", v.name, v.name)
 		code += fmt.Sprintf("\thit := false\n")
 		code += fmt.Sprintf("\tchanged := false\n")
-		code += fmt.Sprintf("\tfor _, v := range ls {\n")
+		code += fmt.Sprintf("\tfor i, v := range ls {\n")
 		p_keys_eq = []string{}
 		for _, pkv := range v.key {
 			p_keys_eq = append(p_keys_eq, fmt.Sprintf("v.%s != it2.%s", pkv.Key, pkv.Key))
 		}
 		code += fmt.Sprintf("\t\tif %s {\n\t\t\tcontinue\n\t\t}\n", strings.Join(p_keys_eq, " || "))
+		code += fmt.Sprintf("\t\tif !v.Equal(it2) {\n\t\t\tls[i], changed = it2, true\n\t\t}\n")
+		/**
 		for _, vf := range v.fields {
 			if ok := v.key.Get(vf.field); ok != nil {
 				continue
@@ -320,12 +400,17 @@ func do_proto(file string) error {
 					vf.repeated, vf.field, vf.field, vf.field)
 			}
 		}
+		*/
 		code += "\t\thit = true\n\t\tbreak\n"
 		code += "\t}\n"
 		code += "\tif !hit {\n\t\tls = append(ls, it2)\n\t\tchanged = true\n\t}\n"
 		code += "\treturn ls, changed\n}\n"
 
 		// slice sync slice
+		code += fmt.Sprintf("\nfunc %sSliceSyncSlice(ls, ls2 []*%s) ([]*%s, bool) {\n", v.name, v.name, v.name)
+		code += fmt.Sprintf("\tif %sSliceEqual(ls, ls2) {\n\t\treturn ls, false\n\t}\n", v.name)
+		code += fmt.Sprintf("\treturn ls2, true\n}\n")
+		/**
 		code += fmt.Sprintf("\nfunc %sSliceSyncSlice(ls, ls2 []*%s) ([]*%s, bool) {\n", v.name, v.name, v.name)
 		code += fmt.Sprintf("\tif len(ls2) == 0 {\n\t\treturn ls, false\n\t}\n")
 		code += fmt.Sprintf("\tobject_slice_mu_%s.Lock()\n\tdefer object_slice_mu_%s.Unlock()\n\n", v.name, v.name)
@@ -356,6 +441,7 @@ func do_proto(file string) error {
 		code += "\t\tif !hit {\n\t\t\tls = append(ls, v2)\n\t\t\tchanged = true\n\t\t}\n"
 		code += "\t}\n"
 		code += "\treturn ls, changed\n}\n"
+		*/
 	}
 
 	{
