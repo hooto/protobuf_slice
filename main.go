@@ -33,6 +33,7 @@ type pkg_types struct {
 
 var (
 	string_space_reg = regexp.MustCompile("\\ +")
+	codeCommentsReg  = regexp.MustCompile(`/\*(.*?)\*/`)
 	intypes          = types.ArrayString([]string{"string", "int", "int32", "int64", "uint", "uint32", "uint64", "bool", "float", "bytes"})
 	buildins         = map[string]*pkg_types{}
 )
@@ -114,8 +115,17 @@ func do_proto(file string) error {
 		}
 
 		str := string_space_reg.ReplaceAllString(strings.TrimSpace(strings.Replace(string(bs), "\t", " ", -1)), " ")
+		str = codeCommentsReg.ReplaceAllString(str, "")
 
-		if strings.HasPrefix(str, "enum") {
+		if strings.HasPrefix(str, "}") {
+
+			if entry != nil && entry.name != "" && len(entry.key) > 0 {
+				list = append(list, entry)
+			}
+			entry = nil
+			continue
+
+		} else if strings.HasPrefix(str, "enum") {
 
 			if entry != nil && entry.name != "" && len(entry.key) > 0 {
 				list = append(list, entry)
