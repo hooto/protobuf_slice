@@ -33,6 +33,7 @@ type pkg_types struct {
 
 var (
 	string_space_reg = regexp.MustCompile("\\ +")
+	codeCommentsReg  = regexp.MustCompile(`/\*(.*?)\*/`)
 	intypes          = types.ArrayString([]string{"string", "int", "int32", "int64", "uint", "uint32", "uint64", "bool", "float", "bytes"})
 	buildins         = map[string]*pkg_types{}
 )
@@ -114,8 +115,17 @@ func do_proto(file string) error {
 		}
 
 		str := string_space_reg.ReplaceAllString(strings.TrimSpace(strings.Replace(string(bs), "\t", " ", -1)), " ")
+		str = codeCommentsReg.ReplaceAllString(str, "")
 
-		if strings.HasPrefix(str, "enum") {
+		if strings.HasPrefix(str, "}") {
+
+			if entry != nil && entry.name != "" && len(entry.key) > 0 {
+				list = append(list, entry)
+			}
+			entry = nil
+			continue
+
+		} else if strings.HasPrefix(str, "enum") {
 
 			if entry != nil && entry.name != "" && len(entry.key) > 0 {
 				list = append(list, entry)
@@ -187,7 +197,10 @@ func do_proto(file string) error {
 			})
 
 		case "repeated":
-			if intypes.Has(ps[1]) {
+			if ps[1] == "bytes" {
+				obj_ins.Set(ps[1])
+				ps[1] = "PbArray" + strings.Title(ps[1])
+			} else if intypes.Has(ps[1]) {
 				obj_ins.Set(ps[1])
 				ps[1] = "Pb" + strings.Title(ps[1])
 			}
@@ -300,8 +313,10 @@ func do_proto(file string) error {
 				if vf.isObject {
 					code += fmt.Sprintf(" ||\n\t\t(it.%s == nil && it2.%s != nil)", vf.field, vf.field)
 					code += fmt.Sprintf(" ||\n\t\t(it.%s != nil && !it.%s.Equal(it2.%s))", vf.field, vf.field, vf.field)
-				} else if vf.field_type == "bytes" {
+				} else if vf.repeated == "" && vf.field_type == "bytes" {
 					code += fmt.Sprintf(" ||\n\t\t!PbBytesSliceEqual(it.%s, it2.%s)", vf.field, vf.field)
+				} else if vf.repeated != "" && vf.field_type == "bytes" {
+					code += fmt.Sprintf(" ||\n\t\t!PbArrayBytesSliceEqual(it.%s, it2.%s)", vf.field, vf.field)
 				} else if vf.repeated == "" {
 					code += fmt.Sprintf(" ||\n\t\tit.%s != it2.%s", vf.field, vf.field)
 				} else {
@@ -515,6 +530,18 @@ func PbBytesSliceEqual(ls, ls2 []byte) bool {
 		return false
 	}
 	return bytes.Compare(ls, ls2) == 0
+}
+
+func PbArrayBytesSliceEqual(ls, ls2 [][]byte) bool {
+	if len(ls) != len(ls2) {
+		return false
+	}
+	for i, v := range ls {
+		if !PbBytesSliceEqual(v, ls2[i]) {
+			return false
+		}
+	}
+	return true
 }`
 	}
 
