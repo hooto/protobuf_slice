@@ -364,6 +364,14 @@ func do_proto(file string) error {
 		code += "\t}\n"
 		code += "\treturn nil\n}\n"
 
+		// slice del
+		code += fmt.Sprintf("\nfunc %sSliceDel(ls []*%s, %s) ([]*%s, bool) {\n", v.name, v.name, strings.Join(p_keys, ", "), v.name)
+		code += fmt.Sprintf("\tobject_slice_mu_%s.Lock()\n\tdefer object_slice_mu_%s.Unlock()\n", v.name, v.name)
+		code += fmt.Sprintf("\tfor i, v := range ls {\n")
+		code += fmt.Sprintf("\t\tif %s {\n\t\t\tls = append(ls[:i], ls[i+1:]...)\n\t\t\treturn ls, true\n\t\t}\n", strings.Join(p_keys_eq, " && "))
+		code += "\t}\n"
+		code += "\treturn ls, false\n}\n"
+
 		// slice equal
 		code += fmt.Sprintf("\nfunc %sSliceEqual(ls, ls2 []*%s) bool {\n", v.name, v.name)
 		code += fmt.Sprintf("\tobject_slice_mu_%s.RLock()\n\tdefer object_slice_mu_%s.RUnlock()\n\n", v.name, v.name)
